@@ -20,16 +20,17 @@ package fluentd_forwarder
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
-	logging "github.com/op/go-logging"
-	"github.com/ugorji/go/codec"
-	"io"
+	"log"
 	"net"
+	"os"
 	"reflect"
 	"sync"
 	"sync/atomic"
+
+	logging "github.com/op/go-logging"
+	"github.com/ugorji/go/codec"
 )
 
 type forwardClient struct {
@@ -99,131 +100,6 @@ func (c *forwardClient) decodeRecordSet(tag []byte, entries []interface{}) (Flue
 	}, nil
 }
 
-func (c *forwardClient) decodeEntries() ([]FluentRecordSet, error) {
-	v := []interface{}{nil, nil, nil}
-	err := c.dec.Decode(&v)
-	if err != nil {
-		return nil, err
-	}
-	tag, ok := v[0].([]byte)
-	if !ok {
-		return nil, errors.New("Failed to decode tag field")
-	}
-
-	var retval []FluentRecordSet
-	switch timestamp_or_entries := v[1].(type) {
-	case uint64:
-		timestamp := timestamp_or_entries
-		data, ok := v[2].(map[string]interface{})
-		if !ok {
-			return nil, errors.New("Failed to decode data field")
-		}
-		coerceInPlace(data)
-		retval = []FluentRecordSet{
-			{
-				Tag: string(tag), // XXX: byte => rune
-				Records: []TinyFluentRecord{
-					{
-						Timestamp: timestamp,
-						Data:      data,
-					},
-				},
-			},
-		}
-	case float64:
-		timestamp := uint64(timestamp_or_entries)
-		data, ok := v[2].(map[string]interface{})
-		if !ok {
-			return nil, errors.New("Failed to decode data field")
-		}
-		retval = []FluentRecordSet{
-			{
-				Tag: string(tag), // XXX: byte => rune
-				Records: []TinyFluentRecord{
-					{
-						Timestamp: timestamp,
-						Data:      data,
-					},
-				},
-			},
-		}
-	case []interface{}:
-		if !ok {
-			return nil, errors.New("Unexpected payload format")
-		}
-		recordSet, err := c.decodeRecordSet(tag, timestamp_or_entries)
-		if err != nil {
-			return nil, err
-		}
-		retval = []FluentRecordSet{recordSet}
-	case []byte:
-		entries := make([]interface{}, 0)
-		reader := bytes.NewReader(timestamp_or_entries)
-		dec := codec.NewDecoder(reader, c.codec)
-		for reader.Len() > 0 { // codec.Decoder doesn't return EOF.
-			entry := []interface{}{}
-			if err != dec.Decode(&entry) {
-				if err == io.EOF { // in case codec.Decoder changes its behavior
-					break
-				}
-				return nil, err
-			}
-			entries = append(entries, entry)
-		}
-		recordSet, err := c.decodeRecordSet(tag, entries)
-		if err != nil {
-			return nil, err
-		}
-		retval = []FluentRecordSet{recordSet}
-	default:
-		return nil, errors.New(fmt.Sprintf("Unknown type: %t", timestamp_or_entries))
-	}
-	atomic.AddInt64(&c.input.entries, int64(len(retval)))
-	return retval, nil
-}
-
-func (c *forwardClient) startHandling() {
-	c.input.wg.Add(1)
-	go func() {
-		defer func() {
-			err := c.conn.Close()
-			if err != nil {
-				c.logger.Debugf("Close: %s", err.Error())
-			}
-			c.input.markDischarged(c)
-			c.input.wg.Done()
-		}()
-		c.input.logger.Infof("Started handling connection from %s", c.conn.RemoteAddr().String())
-		for {
-			recordSets, err := c.decodeEntries()
-			if err != nil {
-				err_, ok := err.(net.Error)
-				if ok {
-					if err_.Temporary() {
-						c.logger.Infof("Temporary failure: %s", err_.Error())
-						continue
-					}
-				}
-				if err == io.EOF {
-					c.logger.Infof("Client %s closed the connection", c.conn.RemoteAddr().String())
-				} else {
-					c.logger.Error(err.Error())
-				}
-				break
-			}
-
-			if len(recordSets) > 0 {
-				err_ := c.input.port.Emit(recordSets)
-				if err_ != nil {
-					c.logger.Error(err_.Error())
-					break
-				}
-			}
-		}
-		c.input.logger.Infof("Ended handling connection from %s", c.conn.RemoteAddr().String())
-	}()
-}
-
 func (c *forwardClient) shutdown() {
 	err := c.conn.Close()
 	if err != nil {
@@ -243,60 +119,121 @@ func newForwardClient(input *ForwardInput, logger *logging.Logger, conn *net.TCP
 	return c
 }
 
-func (input *ForwardInput) spawnAcceptor() {
-	input.logger.Notice("Spawning acceptor")
-	input.wg.Add(1)
+func Start(listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
+	log.Println("STARTING INPUT.GO")
+
+	spawnAcceptor(listener, acceptChan)
+	spawnDaemon(listener, acceptChan, c)
+	log.Println("END OF STARTING INPUT.GO")
+}
+
+func spawnAcceptor(listener net.TCPListener, acceptChan chan *net.TCPConn) {
+	log.Println("SPAWNING ACCEPTOR")
 	go func() {
+		log.Println("SPAWNING ACCEPTOR INSIDE GO FUNC")
+
 		defer func() {
-			close(input.acceptChan)
-			input.wg.Done()
+			close(acceptChan)
 		}()
-		input.logger.Notice("Acceptor started")
+
 		for {
-			conn, err := input.listener.AcceptTCP()
+			conn, err := listener.AcceptTCP()
 			if err != nil {
-				input.logger.Notice(err.Error())
+				log.Printf("\n\n ERROR IS %+v\n\n", err)
 				break
 			}
 			if conn != nil {
-				input.logger.Noticef("Connected from %s", conn.RemoteAddr().String())
-				input.acceptChan <- conn
+				log.Printf("Connected from %s", conn.RemoteAddr().String())
+				acceptChan <- conn
 			} else {
-				input.logger.Notice("AcceptTCP returned nil; something went wrong")
+				log.Printf("\n\n CONN IS EMPTY")
 				break
 			}
 		}
-		input.logger.Notice("Acceptor ended")
+		log.Println("ACCEPTOR ENDED")
 	}()
 }
 
-func (input *ForwardInput) spawnDaemon() {
-	input.logger.Notice("Spawning daemon")
-	input.wg.Add(1)
+func spawnDaemon(listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
 	go func() {
+
 		defer func() {
-			close(input.shutdownChan)
-			input.wg.Done()
+			close(acceptChan)
 		}()
-		input.logger.Notice("Daemon started")
-	loop:
+
 		for {
 			select {
-			case conn := <-input.acceptChan:
+			case conn := <-acceptChan:
+				log.Println("INSIDE DAEMON ACCEPTCHAN IS %+v", conn)
 				if conn != nil {
-					input.logger.Notice("Got conn from acceptChan")
-					newForwardClient(input, input.logger, conn, input.codec).startHandling()
+					dec := codec.NewDecoder(bufio.NewReader(conn), &c)
+					startHandling(dec) // required a decoder
 				}
-			case <-input.shutdownChan:
-				input.listener.Close()
-				for _, client := range input.clients {
-					client.shutdown()
-				}
-				break loop
 			}
 		}
-		input.logger.Notice("Daemon ended")
 	}()
+}
+
+func startHandling(dec *codec.Decoder) {
+	log.Println("STARTING TO HANDLE")
+	go func() {
+		for {
+			recordSets, _ := decodeEntries(dec)
+
+			if len(recordSets) > 0 {
+				log.Println("THERE ARE MESSAGES")
+				for _, item := range recordSets {
+					for _, rec := range item.Records {
+						for key, value := range rec.Data {
+							d := string(value.([]uint8))
+							fmt.Printf("TAG: %s,  TTTTTTIMESTAMP: %s, %s=>%s \n", item.Tag, rec.Timestamp, key, d)
+						}
+					}
+				}
+			}
+		}
+	}()
+}
+
+func decodeEntries(dec *codec.Decoder) ([]FluentRecordSet, error) {
+	v := []interface{}{nil, nil, nil}
+	err := dec.Decode(&v)
+	if err != nil {
+		log.Println("++++++++++++++++++1 %s", err)
+		os.Exit(0)
+		return nil, err
+	}
+	tag, ok := v[0].([]byte)
+	if !ok {
+		return nil, errors.New("Failed to decode tag field")
+	}
+
+	var retval []FluentRecordSet
+	log.Println(" THE DATA HERE IS %+v", v)
+	switch timestamp_or_entries := v[1].(type) {
+	case int64:
+		log.Println("STARTING TO DECODE ENTRIES TYPE INT64")
+		timestamp := uint64(timestamp_or_entries)
+		data, ok := v[2].(map[string]interface{})
+		if !ok {
+			log.Printf("FAILED TO DECODE DATA FIELD")
+			return nil, errors.New("Failed to decode data field")
+		}
+		retval = []FluentRecordSet{
+			{
+				Tag: string(tag), // XXX: byte => rune
+				Records: []TinyFluentRecord{
+					{
+						Timestamp: timestamp,
+						Data:      data,
+					},
+				},
+			},
+		}
+	default:
+		return nil, errors.New(fmt.Sprintf("Unknown type: %t", timestamp_or_entries))
+	}
+	return retval, nil
 }
 
 func (input *ForwardInput) markCharged(c *forwardClient) {
@@ -313,11 +250,6 @@ func (input *ForwardInput) markDischarged(c *forwardClient) {
 
 func (input *ForwardInput) String() string {
 	return "input"
-}
-
-func (input *ForwardInput) Start() {
-	input.spawnAcceptor()
-	input.spawnDaemon()
 }
 
 func (input *ForwardInput) WaitForShutdown() {

@@ -1,24 +1,25 @@
 package main
 
 import (
-	"crypto/x509"
 	"flag"
 	"fmt"
-	fluentd_forwarder "github.com/fluent/fluentd-forwarder"
+	"io"
+	"log"
+	"net"
+	"net/url"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"time"
+
+	fluentd_forwarder "github.com/boncheff/fluentd-forwarder"
 	strftime "github.com/jehiah/go-strftime"
 	ioextras "github.com/moriyoshi/go-ioextras"
 	logging "github.com/op/go-logging"
+	"github.com/ugorji/go/codec"
 	gcfg "gopkg.in/gcfg.v1"
-	"io"
-	"io/ioutil"
-	"log"
-	"net/url"
-	"os"
-	"path/filepath"
-	"reflect"
-	"runtime/pprof"
-	"strings"
-	"time"
 )
 
 type FluentdForwarderParams struct {
@@ -293,85 +294,28 @@ func main() {
 		logger.Infof("Version %s starting...", progVersion)
 	}
 
-	workerSet := fluentd_forwarder.NewWorkerSet()
+	// -----------------------------------------------
 
-	if params.CPUProfileFile != "" {
-		f, err := os.Create(params.CPUProfileFile)
-		if err != nil {
-			Error(err.Error())
-			os.Exit(1)
-		}
-		pprof.StartCPUProfile(f)
-		defer pprof.StopCPUProfile()
-	}
-
-	output := (PortWorker)(nil)
-	err := (error)(nil)
-	switch params.OutputType {
-	case "fluent":
-		output, err = fluentd_forwarder.NewForwardOutput(
-			logger,
-			params.ForwardTo,
-			params.RetryInterval,
-			params.ConnectionTimeout,
-			params.WriteTimeout,
-			params.FlushInterval,
-			params.JournalGroupPath,
-			params.MaxJournalChunkSize,
-			params.Metadata,
-		)
-	case "td":
-		rootCAs := (*x509.CertPool)(nil)
-		if params.SslCACertBundleFile != "" {
-			b, err := ioutil.ReadFile(params.SslCACertBundleFile)
-			if err != nil {
-				Error("Failed to read CA bundle file: %s", err.Error())
-				os.Exit(1)
-			}
-			rootCAs = x509.NewCertPool()
-			if !rootCAs.AppendCertsFromPEM(b) {
-				Error("No valid certificate found in %s", params.SslCACertBundleFile)
-				os.Exit(1)
-			}
-		}
-		output, err = fluentd_forwarder.NewTDOutput(
-			logger,
-			params.ForwardTo,
-			params.ConnectionTimeout,
-			params.WriteTimeout,
-			params.FlushInterval,
-			params.Parallelism,
-			params.JournalGroupPath,
-			params.MaxJournalChunkSize,
-			params.ApiKey,
-			params.DatabaseName,
-			params.TableName,
-			"",
-			params.Ssl,
-			rootCAs,
-			"", // TODO:http-proxy
-			params.Metadata,
-		)
-	}
+	_codec := codec.MsgpackHandle{}
+	_codec.MapType = reflect.TypeOf(map[string]interface{}(nil))
+	_codec.RawToString = false
+	addr, err := net.ResolveTCPAddr("tcp", params.ListenOn)
 	if err != nil {
-		Error("%s", err.Error())
-		return
+		log.Printf("++++++ %+v", err.Error())
 	}
-	workerSet.Add(output)
-	input, err := fluentd_forwarder.NewForwardInput(logger, params.ListenOn, output)
+	listener, err := net.ListenTCP("tcp", addr)
 	if err != nil {
-		Error(err.Error())
-		return
+		fmt.Println(err.Error())
 	}
-	workerSet.Add(input)
+	acceptChan := make(chan *net.TCPConn)
 
-	signalHandler := NewSignalHandler(workerSet)
-	input.Start()
-	output.Start()
-	signalHandler.Start()
+	// -----------------------------------------------
 
-	for _, worker := range workerSet.Slice() {
-		worker.WaitForShutdown()
-	}
+	fluentd_forwarder.Start(*listener, acceptChan, _codec)
+
+	wait := make(chan os.Signal, 1)
+	signal.Notify(wait, os.Interrupt, os.Kill)
+	<-wait
+
 	logger.Notice("Shutting down...")
 }

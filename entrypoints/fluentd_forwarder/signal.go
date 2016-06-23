@@ -1,9 +1,10 @@
 package main
 
 import (
-	fluentd_forwarder "github.com/fluent/fluentd-forwarder"
 	"os"
 	"os/signal"
+
+	fluentd_forwarder "github.com/boncheff/fluentd-forwarder"
 )
 
 type SignalHandler struct {
