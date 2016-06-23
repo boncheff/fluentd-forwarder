@@ -9,7 +9,7 @@ import (
 type MetroConfig struct {
 	KafkaHosts []string `envconfig:"kafka_hosts" default:"172.17.42.1:9092"`
 	RegionTag  string   `envconfig:"region_tag" default:"eu"`
-	KafkaTopic string   `default:".messages1"`
+	KafkaTopic string   `default:".messages"`
 	Component  string   `default:"fluentd-forwarder"`
 }
 

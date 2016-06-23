@@ -3,6 +3,7 @@ package metro
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/Shopify/sarama"
 	log "github.com/Sirupsen/logrus"
@@ -56,42 +57,34 @@ func (p *MetroProducer) Close() (err error) {
 //Produces a message
 func (p *MetroProducer) Produce(item FluentRecordSet) error {
 	var data string
+	var dockerTag = item.Tag
 
 	for _, rec := range item.Records {
+		data = dockerTag
 		for key, value := range rec.Data {
 			d := string(value.([]uint8))
-			data = fmt.Sprintf("TAG: %s,   %s=>%s \n", item.Tag, key, d)
-			// fmt.Printf("TAG: %s,  TIMESTAMP: %s, %s=>%s \n", item.Tag, rec.Timestamp, key, d)
+			data = data + fmt.Sprintf(" %s: %s", key, d)
 		}
 	}
 
 	payload := Log{
-		Message:  data,
-		Service:  "fluentd-forwarder",
-		Severity: "INFO",
-		//  SourceHost
-		//  CustomerId
-		//  UserId        string            `json:"user_id"`
-		//  TransactionId
-		//  ResourceIds
-		//  Debug
-		//  Extra
+		Message:     data,
+		Service:     conf.Component,
+		Severity:    "INFO",
+		ResourceIds: []string{},
 	}
 	message := LogMessage{
 		Type:    "message",
 		Payload: payload,
-		//      Resource: metro.Resource{
-		//          Id:       "3e08f2b9-d9ec-4381-b0ad-50e268ad3979",
-		//          Location: "eu",
-		//      },
-		//      ProcessingLog: map[string]string{
-		//          "metrics.customer_api": "2016-04-28T15:02:01.56888Z",
-		//      },
-		//      Time: "2016-04-28T15:04:01.56888Z",
-		//      CustomerId: "00000000-0000-0000-0000-000000000001",
-		//      Component:  "vader.aggregator",
-		//      Location:   "eu",
-		//      MessageId:  "67e2b225-e7da-49b0-a428-7dd6fdeef6fb",
+		Resource: Resource{
+			Id:       dockerTag,
+			Location: "eu",
+		},
+		ProcessingLog: map[string]string{
+			conf.Component: time.Now().UTC().Format("2006-01-02T15:04:05.999999Z"),
+		},
+		Time:      time.Now().UTC().Format("2006-01-02T15:04:05.999999Z"),
+		Component: conf.Component,
 	}
 
 	json, err := json.Marshal(message)
@@ -103,7 +96,7 @@ func (p *MetroProducer) Produce(item FluentRecordSet) error {
 	case err := <-p.producer.Errors():
 		return err
 	default:
-		//Nothing to do here
+		// Nothing to see here - move along...
 	}
 	return nil
 }
