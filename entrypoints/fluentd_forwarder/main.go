@@ -295,11 +295,7 @@ func main() {
 		logger.Infof("Version %s starting...", progVersion)
 	}
 
-	//-----------------------------
-
-	producer := metro.NewLogHandler()
-
-	//-----------------------------
+	producer := metro.NewMetroProducer()
 
 	_codec := codec.MsgpackHandle{}
 	_codec.MapType = reflect.TypeOf(map[string]interface{}(nil))

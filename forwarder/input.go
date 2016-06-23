@@ -29,9 +29,9 @@ import (
 	"github.com/ugorji/go/codec"
 )
 
-func Start(producer *metro.LogHandler, listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
+func Start(producer *metro.MetroProducer, listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
 	spawnAcceptor(listener, acceptChan)
-	spawnDaemon(listener, acceptChan, c)
+	spawnDaemon(producer, listener, acceptChan, c)
 }
 
 func spawnAcceptor(listener net.TCPListener, acceptChan chan *net.TCPConn) {
@@ -58,7 +58,7 @@ func spawnAcceptor(listener net.TCPListener, acceptChan chan *net.TCPConn) {
 	}()
 }
 
-func spawnDaemon(listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
+func spawnDaemon(producer *metro.MetroProducer, listener net.TCPListener, acceptChan chan *net.TCPConn, c codec.MsgpackHandle) {
 	go func() {
 
 		defer func() {
@@ -70,33 +70,28 @@ func spawnDaemon(listener net.TCPListener, acceptChan chan *net.TCPConn, c codec
 			case conn := <-acceptChan:
 				if conn != nil {
 					dec := codec.NewDecoder(bufio.NewReader(conn), &c)
-					startHandling(dec) // required a decoder
+					startHandling(producer, dec) // required a decoder
 				}
 			}
 		}
 	}()
 }
 
-func startHandling(dec *codec.Decoder) {
+func startHandling(producer *metro.MetroProducer, dec *codec.Decoder) {
 	go func() {
 		for {
 			recordSets, _ := decodeEntries(dec)
 
 			if len(recordSets) > 0 {
 				for _, item := range recordSets {
-					for _, rec := range item.Records {
-						for key, value := range rec.Data {
-							d := string(value.([]uint8))
-							fmt.Printf("TAG: %s,  TIMESTAMP: %s, %s=>%s \n", item.Tag, rec.Timestamp, key, d)
-						}
-					}
+					producer.Produce(item)
 				}
 			}
 		}
 	}()
 }
 
-func decodeEntries(dec *codec.Decoder) ([]FluentRecordSet, error) {
+func decodeEntries(dec *codec.Decoder) ([]metro.FluentRecordSet, error) {
 	v := []interface{}{nil, nil, nil}
 	err := dec.Decode(&v)
 	if err != nil {
@@ -107,7 +102,7 @@ func decodeEntries(dec *codec.Decoder) ([]FluentRecordSet, error) {
 		return nil, errors.New("Failed to decode tag field")
 	}
 
-	var retval []FluentRecordSet
+	var retval []metro.FluentRecordSet
 	switch timestamp_or_entries := v[1].(type) {
 	case int64:
 		timestamp := uint64(timestamp_or_entries)
@@ -116,10 +111,10 @@ func decodeEntries(dec *codec.Decoder) ([]FluentRecordSet, error) {
 			log.Printf("FAILED TO DECODE DATA FIELD")
 			return nil, errors.New("Failed to decode data field")
 		}
-		retval = []FluentRecordSet{
+		retval = []metro.FluentRecordSet{
 			{
 				Tag: string(tag), // XXX: byte => rune
-				Records: []TinyFluentRecord{
+				Records: []metro.TinyFluentRecord{
 					{
 						Timestamp: timestamp,
 						Data:      data,

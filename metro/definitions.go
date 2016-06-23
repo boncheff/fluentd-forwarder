@@ -54,3 +54,13 @@ type Log struct {
 	Debug         map[string]string `json:"debug"`
 	Extra         map[string]string `json:"extra"`
 }
+
+type FluentRecordSet struct {
+	Tag     string
+	Records []TinyFluentRecord
+}
+
+type TinyFluentRecord struct {
+	Timestamp uint64
+	Data      map[string]interface{}
+}
