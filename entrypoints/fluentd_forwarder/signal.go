@@ -4,7 +4,7 @@ import (
 	"os"
 	"os/signal"
 
-	fluentd_forwarder "github.com/boncheff/fluentd-forwarder"
+	fluentd_forwarder "github.com/boncheff/fluentd-forwarder/forwarder"
 )
 
 type SignalHandler struct {

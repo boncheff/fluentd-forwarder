@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	fluentd_forwarder "github.com/boncheff/fluentd-forwarder"
+	fluentd_forwarder "github.com/boncheff/fluentd-forwarder/forwarder"
+	metro "github.com/boncheff/fluentd-forwarder/metro"
 	strftime "github.com/jehiah/go-strftime"
 	ioextras "github.com/moriyoshi/go-ioextras"
 	logging "github.com/op/go-logging"
@@ -294,24 +295,27 @@ func main() {
 		logger.Infof("Version %s starting...", progVersion)
 	}
 
-	// -----------------------------------------------
+	//-----------------------------
+
+	producer := metro.NewLogHandler()
+
+	//-----------------------------
 
 	_codec := codec.MsgpackHandle{}
 	_codec.MapType = reflect.TypeOf(map[string]interface{}(nil))
 	_codec.RawToString = false
 	addr, err := net.ResolveTCPAddr("tcp", params.ListenOn)
 	if err != nil {
-		log.Printf("++++++ %+v", err.Error())
+		log.Printf("Error resolving TCP address %s:  %+v", params.ListenOn, err.Error())
 	}
 	listener, err := net.ListenTCP("tcp", addr)
 	if err != nil {
+		log.Printf("Error listening on %s:  %+v", addr, err.Error())
 		fmt.Println(err.Error())
 	}
 	acceptChan := make(chan *net.TCPConn)
 
-	// -----------------------------------------------
-
-	fluentd_forwarder.Start(*listener, acceptChan, _codec)
+	fluentd_forwarder.Start(producer, *listener, acceptChan, _codec)
 
 	wait := make(chan os.Signal, 1)
 	signal.Notify(wait, os.Interrupt, os.Kill)

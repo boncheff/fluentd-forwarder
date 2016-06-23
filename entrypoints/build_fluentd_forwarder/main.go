@@ -27,7 +27,7 @@ func getRevision(importPath string) (string, error) {
 	return (string)(out), nil
 }
 
-const ImportPathBase = "github.com/boncheff/fluentd-forwarder"
+const ImportPathBase = "github.com/boncheff/fluentd-forwarder/forwarder/"
 const VersionStringVarName = "main.progVersion"
 
 func bail(message string, status int) {
